@@ -95,7 +95,6 @@ def export_to_excel(data: Union[Tuple[List[Dict], int], Dict], filename: str) ->
             return
 
         for sheet in wb:
-            # Форматирование заголовков
             for row in sheet.iter_rows(max_row=1):
                 for cell in row:
                     cell.font = Font(bold=True)

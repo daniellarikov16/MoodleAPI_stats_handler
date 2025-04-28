@@ -198,3 +198,169 @@ class MoodleClient:
         except Exception as e:
             print(f"Ошибка при формировании отчета: {str(e)}")
             return None
+
+    def get_quiz_info(self, quiz_ids: List, course_id: int) -> Dict:
+        """
+        Получаем информацию о конкретных тестах
+        """
+        if not quiz_ids:
+            print("Не переданы ID тестов")
+            return {}
+
+        all_quizzes = self.call_api("mod_quiz_get_quizzes_by_courses", **{"courseids[0]": course_id})
+
+        if not all_quizzes:
+            print(f"Не удалось получить тесты для курса {course_id}")
+            return {}
+
+        if 'quizzes' not in all_quizzes:
+            print(f"Неожиданный формат ответа: {all_quizzes}")
+            return {}
+
+        quizzes = all_quizzes.get('quizzes', [])
+        return {q['id']: q for q in quizzes if q['id'] in quiz_ids}
+
+    def get_group_students(self, group_id: int) -> List[int]:
+        """
+        Получаем список ID студентов в группе
+        """
+        try:
+            params = {"groupids[0]": group_id}
+            result = self.call_api("core_group_get_group_members", **params)
+
+            if not result:
+                print("Пустой ответ от API")
+                return []
+
+            if isinstance(result, list) and len(result) > 0:
+                first_item = result[0]
+                if isinstance(first_item, dict) and 'userids' in first_item:
+                    user_ids = first_item['userids']
+                    if isinstance(user_ids, list):
+                        valid_ids = [uid for uid in user_ids if isinstance(uid, int)]
+                        return valid_ids
+
+        except Exception as e:
+            print(f"Ошибка при получении студентов: {str(e)}")
+            return []
+
+    def get_student_names(self, user_ids: List) -> Dict:
+        """
+        Получаем имена студентов
+        """
+        if not user_ids:
+            return {}
+        params = {'field': 'id'}
+        for i, user_id in enumerate(user_ids):
+            params[f'values[{i}]'] = user_id
+
+        result = self.call_api("core_user_get_users_by_field", **params)
+        return {u['id']: f"{u['firstname']} {u['lastname']}" for u in result} if result else {}
+
+    def get_user_quiz_attempts(self, user_id: int, quiz_ids: List[int]) -> List[Dict]:
+        """
+        Получает попытки тестов без изменения оригинальных оценок
+        """
+        attempts = []
+        for quiz_id in quiz_ids:
+            try:
+                result = self.call_api("mod_quiz_get_user_attempts",
+                                       quizid=quiz_id,
+                                       userid=user_id)
+
+                if result and 'attempts' in result:
+                    for attempt in result['attempts']:
+                        if attempt.get('state') == 'finished':
+                            raw_grade = attempt.get('sumgrades')
+                            max_grade = attempt.get('totalmarks')
+
+                            attempts.append({
+                                'quiz_id': quiz_id,
+                                'raw_grade': raw_grade,
+                                'grade': float(raw_grade) if raw_grade is not None else 0.0,
+                            })
+            except Exception as e:
+                print(f"Ошибка в получении оценок {user_id}: {str(e)}")
+
+        return attempts
+
+    def analyze_attempts_results(self, quiz_ids: List[int], group_id: int, course_id: int) -> List[Dict]:
+        """
+        Анализирует все попытки по всем указанным тестам и возвращает максимальную оценку
+        """
+        students = self.get_group_students(group_id)
+        if not students:
+            return []
+
+        student_names = self.get_student_names(students)
+        results = []
+
+        for user_id in students:
+            all_attempts = []
+
+            for quiz_id in quiz_ids:
+                attempts = self.get_user_quiz_attempts(user_id, [quiz_id])
+                all_attempts.extend(attempts)
+
+            raw_name = student_names.get(user_id, "Неизвестный")
+            clean_name = raw_name.split('@')[0].strip() if '@' in raw_name else raw_name
+
+            if all_attempts:
+                best_grade = max(attempt['grade'] for attempt in all_attempts)
+                results.append({
+                    'user_name': clean_name,
+                    'best_grade': best_grade
+                })
+            else:
+                results.append({
+                    'user_name': clean_name,
+                    'best_grade': 0.0
+                })
+
+        return sorted(results, key=lambda x: x['user_name'])
+
+    def get_course_groups(self, course_id: int) -> List:
+        """
+        Получаем список всех групп в курсе
+        """
+        response = self.call_api(
+            "core_group_get_course_groups",
+            courseid=course_id
+        )
+        groups = response
+        valid_groups = []
+        for item in groups:
+            if isinstance(item, dict):
+                valid_groups.append(item)
+            else:
+                print(f"Пропущен невалидный элемент группы: {item}")
+
+        # Выводим информацию о группах
+        print("\nГруппы в курсе:")
+        for group in valid_groups:
+            print(f"ID: {group.get('id', 'N/A')}, Название: {group.get('name', 'Без названия')}")
+
+        return valid_groups
+
+    def get_group_name(self, group_id: int) -> Optional[str]:
+        """
+        Получает название группы по её ID
+        """
+        try:
+            params = {"groupids[0]": group_id}
+            response = self.call_api("core_group_get_groups", **params)
+
+            if isinstance(response, list) and len(response) > 0:
+                return response[0].get('name')
+
+            if isinstance(response, dict):
+                if 'groups' in response and len(response['groups']) > 0:
+                    return response['groups'][0].get('name')
+                if 'exception' in response:
+                    print(f"Ошибка API: {response.get('message')}")
+
+            return None
+
+        except Exception as e:
+            print(f"Ошибка при получении названия группы: {str(e)}")
+            return None
